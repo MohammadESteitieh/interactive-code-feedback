@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'">
+<title>__TITLE__</title>
+<style>__STYLE__</style>
+</head>
+<body>
+<header>
+  <strong>__TITLE__</strong>
+  <span class="scope" id="scope"></span>
+  <span class="spacer"></span>
+  <span class="badge" id="capabilities"></span>
+  <span class="badge" id="count">0 comments</span>
+  <span class="font-controls" aria-label="Code font size">
+    <button id="font-minus" title="Decrease code font size" aria-label="Decrease code font size">−</button>
+    <span id="font-value">14px</span>
+    <button id="font-plus" title="Increase code font size" aria-label="Increase code font size">+</button>
+  </span>
+  <button id="cancel">Cancel</button>
+  <button class="primary" id="send">Send review</button>
+</header>
+<main>
+  <aside id="files"></aside>
+  <section class="workspace">
+    <div class="code-frame">
+      <div id="code"></div>
+      <div id="hscroll" aria-label="Horizontal code scrollbar"><div id="hscroll-content"></div></div>
+    </div>
+    <footer><textarea id="overall" placeholder="Overall review comment (optional)"></textarea></footer>
+  </section>
+</main>
+<div id="hover" role="tooltip" hidden></div>
+<script id="review-data" type="application/json">__DATA__</script>
+<script>const sessionToken=__TOKEN__;
+__SCRIPT__</script>
+</body>
+</html>
