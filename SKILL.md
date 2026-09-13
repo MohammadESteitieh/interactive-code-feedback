@@ -44,6 +44,16 @@ Review a Git range:
 python3 scripts/review.py --range main...HEAD
 ```
 
+Diff reviews show complete changed text files by default, including unchanged lines before, between, and after edits. This applies to working-tree, staged, and revision-range diffs, without including unchanged files.
+
+Use `--compact-diff` only when the user explicitly requests abbreviated context. It restores the previous three context lines around each change and can be combined with `--staged` or `--range`:
+
+```bash
+python3 scripts/review.py --compact-diff
+```
+
+The flag has no effect on `--files` or rendered notebooks.
+
 Review complete files rather than a diff:
 
 ```bash
