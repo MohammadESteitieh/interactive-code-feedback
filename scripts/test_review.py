@@ -4,9 +4,10 @@ import io
 import json
 from pathlib import Path
 import re
-import subprocess
 import tempfile
+from textwrap import dedent
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("review.py")
 SPEC = importlib.util.spec_from_file_location("code_review_ide", SCRIPT)
@@ -14,19 +15,30 @@ review = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(review)
 
 
+@contextlib.contextmanager
+def git_repository():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        review.run_git(root, ["init", "-q"])
+        review.run_git(root, ["config", "user.email", "test@example.com"])
+        review.run_git(root, ["config", "user.name", "Test"])
+        yield root
+
+
 class ReviewTests(unittest.TestCase):
     def test_parse_unified_diff_tracks_old_and_new_lines(self):
-        text = """diff --git a/demo.py b/demo.py
-index 1111111..2222222 100644
---- a/demo.py
-+++ b/demo.py
-@@ -1,3 +1,4 @@
- first
--old
-+new
-+extra
- last
-"""
+        text = dedent("""\
+            diff --git a/demo.py b/demo.py
+            index 1111111..2222222 100644
+            --- a/demo.py
+            +++ b/demo.py
+            @@ -1,3 +1,4 @@
+             first
+            -old
+            +new
+            +extra
+             last
+            """)
         files = review.parse_unified_diff(text)
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0]["path"], "demo.py")
@@ -109,11 +121,7 @@ index 1111111..2222222 100644
         self.assertEqual(error["text"], "ValueError")
 
     def test_collect_diff_replaces_notebook_json_hunks_with_rendered_cells(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+        with git_repository() as root:
             path = root / "demo.ipynb"
             notebook = {
                 "cells": [{"cell_type": "code", "metadata": {}, "execution_count": None,
@@ -122,30 +130,112 @@ index 1111111..2222222 100644
                 "nbformat": 4, "nbformat_minor": 5,
             }
             path.write_text(json.dumps(notebook, indent=1), encoding="utf-8")
-            subprocess.run(["git", "-C", str(root), "add", "demo.ipynb"], check=True)
-            subprocess.run(["git", "-C", str(root), "commit", "-qm", "initial"], check=True)
+            review.run_git(root, ["add", "demo.ipynb"])
+            review.run_git(root, ["commit", "-qm", "initial"])
             notebook["cells"][0]["source"] = ["after = 2"]
             path.write_text(json.dumps(notebook, indent=1), encoding="utf-8")
-            files, _scope = review.collect_diff(root, False, None)
-            self.assertTrue(files[0]["notebook"])
-            self.assertEqual(files[0]["cells"][0]["lines"][0]["text"], "after = 2")
-            self.assertIn("raw JSON diff hidden", files[0]["diff_note"])
+            for compact in (False, True):
+                with self.subTest(compact=compact):
+                    files, _scope = review.collect_diff(root, False, None, compact_diff=compact)
+                    self.assertTrue(files[0]["notebook"])
+                    self.assertEqual(files[0]["cells"][0]["lines"][0]["text"], "after = 2")
+                    self.assertIn("raw JSON diff hidden", files[0]["diff_note"])
 
-    def test_collect_diff_includes_staged_and_unstaged_changes(self):
+    def test_collect_diff_context_and_snapshot_selection(self):
+        original = [f"line {number}" for number in range(1, 81)]
+        expected = (
+            [("context", n, n, f"line {n}") for n in range(1, 20)]
+            + [("added", None, 20, "inserted")]
+            + [("context", n, n + 1, f"line {n}") for n in range(20, 60)]
+            + [("deleted", 60, None, "line 60")]
+            + [("context", n, n, f"line {n}") for n in range(61, 81)]
+        )
+        compact_expected = [
+            row for row in expected
+            if row[0] != "context" or 17 <= row[1] <= 22 or 57 <= row[1] <= 63
+        ]
+        modes = [
+            (False, None, "working tree against HEAD"),
+            (True, None, "staged changes"),
+            (False, "HEAD~1..HEAD", "HEAD~1..HEAD"),
+        ]
+        for staged, git_range, scope in modes:
+            with self.subTest(scope=scope), git_repository() as root:
+                path = root / "demo.txt"
+                # No final newline, including on the unchanged suffix.
+                path.write_text("\n".join(original), encoding="utf-8")
+                (root / "unchanged.txt").write_text("not changed\n", encoding="utf-8")
+                review.run_git(root, ["add", "."])
+                review.run_git(root, ["commit", "-qm", "initial"])
+                inserted = original[:19] + ["inserted"] + original[19:]
+                path.write_text("\n".join(inserted), encoding="utf-8")
+                review.run_git(root, ["add", "demo.txt"])
+                changed = original[:19] + ["inserted"] + original[19:59] + original[60:]
+                path.write_text("\n".join(changed), encoding="utf-8")
+                if staged or git_range:
+                    review.run_git(root, ["add", "demo.txt"])
+                    if git_range:
+                        review.run_git(root, ["commit", "-qm", "changed"])
+                        path.write_text("unrelated staged content\n", encoding="utf-8")
+                        review.run_git(root, ["add", "demo.txt"])
+                    path.write_text("unrelated working-tree content\n", encoding="utf-8")
+                for compact in (False, True):
+                    with self.subTest(compact=compact):
+                        options = {"compact_diff": True} if compact else {}
+                        files, actual_scope = review.collect_diff(root, staged, git_range, **options)
+                        self.assertEqual(actual_scope, scope)
+                        self.assertEqual([file["path"] for file in files], ["demo.txt"])
+                        lines = files[0]["lines"]
+                        self.assertEqual(len(lines), len({line["id"] for line in lines}))
+                        self.assertEqual(sum(line["kind"] == "hunk" for line in lines), 2 if compact else 1)
+                        actual_rows = [
+                            (line["kind"], line["old_line"], line["new_line"], line["text"])
+                            for line in lines if line["kind"] != "hunk"
+                        ]
+                        expected_rows = compact_expected if compact else expected
+                        self.assertEqual(actual_rows, expected_rows)
+
+    def test_main_passes_compact_diff_to_collect_diff(self):
+        mode_flags = [[], ["--staged"], ["--range", "main...HEAD"]]
+        staged_values = [False, True, False]
+        git_ranges = [None, None, "main...HEAD"]
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-            path = root / "demo.py"
-            path.write_text("one\ntwo\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(root), "add", "demo.py"], check=True)
-            subprocess.run(["git", "-C", str(root), "commit", "-qm", "initial"], check=True)
-            path.write_text("one\nchanged\n", encoding="utf-8")
-            files, _scope = review.collect_diff(root, False, None)
-            kinds = [line["kind"] for line in files[0]["lines"]]
-            self.assertIn("deleted", kinds)
-            self.assertIn("added", kinds)
+            root = Path(directory).resolve()
+            result = {"status": "submitted", "mode": "diff", "root": str(root),
+                      "comments": [], "overall": "keep unchanged"}
+            for flags, staged, git_range in zip(mode_flags, staged_values, git_ranges):
+                for compact in (False, True):
+                    with self.subTest(flags=flags, compact=compact), \
+                            mock.patch.object(review, "collect_diff", return_value=([], "test scope")) as collector, \
+                            mock.patch.object(review, "serve", return_value=result) as server, \
+                            contextlib.redirect_stdout(io.StringIO()) as stdout:
+                        options = ["--compact-diff"] if compact else []
+                        self.assertEqual(review.main(["--root", str(root), *flags, *options]), 0)
+                        collector.assert_called_once_with(root, staged, git_range, compact_diff=compact)
+                        self.assertEqual(server.call_args.args[0]["mode"], "diff")
+                        self.assertEqual(server.call_args.args[0]["scope"], "test scope")
+                        self.assertEqual(json.loads(stdout.getvalue()), result)
+
+    def test_main_files_mode_ignores_compact_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "demo.txt").write_text("one\ntwo\n", encoding="utf-8")
+            for compact in (False, True):
+                with self.subTest(compact=compact), \
+                        mock.patch.object(review, "collect_diff") as collector, \
+                        mock.patch.object(review, "serve", return_value={}) as server, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    options = ["--compact-diff"] if compact else []
+                    self.assertEqual(review.main(["--root", str(root), "--files", "demo.txt", *options]), 0)
+                    collector.assert_not_called()
+                    payload = server.call_args.args[0]
+                    self.assertEqual(payload["mode"], "files")
+                    self.assertEqual(payload["scope"], "selected files")
+                    self.assertEqual(
+                        [(line["kind"], line["old_line"], line["new_line"], line["text"])
+                         for line in payload["files"][0]["lines"]],
+                        [("file", 1, 1, "one"), ("file", 2, 2, "two")],
+                    )
 
     def test_bundled_highlighter_marks_python_tokens_and_columns(self):
         self.assertTrue(review.PYGMENTS_AVAILABLE)

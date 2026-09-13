@@ -421,10 +421,12 @@ def replace_notebook_diffs(root: Path, files: list[dict]) -> list[dict]:
     return output
 
 
-def collect_diff(root: Path, staged: bool, git_range: str | None) -> tuple[list[dict], str]:
+def collect_diff(root: Path, staged: bool, git_range: str | None, compact_diff: bool = False) -> tuple[list[dict], str]:
+    # Git accepts at most a signed 32-bit context count; use it to include the whole file.
+    context = 3 if compact_diff else 2**31 - 1
     arguments = [
         "diff", "--no-ext-diff", "--no-color", "--find-renames",
-        "--unified=3", "--src-prefix=a/", "--dst-prefix=b/",
+        f"--unified={context}", "--src-prefix=a/", "--dst-prefix=b/",
     ]
     if staged:
         arguments.append("--cached")
@@ -958,6 +960,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     group.add_argument("--staged", action="store_true", help="review staged Git changes")
     group.add_argument("--range", dest="git_range", help="review a Git revision range")
     group.add_argument("--files", nargs="+", help="review complete files")
+    parser.add_argument("--compact-diff", action="store_true", help="show three context lines per diff hunk instead of complete files; ignored with --files")
     parser.add_argument("--title", default="Code review", help="browser title")
     parser.add_argument("--port", type=int, default=0, help="local port; zero chooses a free port")
     parser.add_argument("--no-open", action="store_true", help="do not open the browser")
@@ -977,7 +980,7 @@ def main(argv: list[str] | None = None) -> int:
             files, scope = collect_files(root, args.files)
             mode = "files"
         else:
-            files, scope = collect_diff(root, args.staged, args.git_range)
+            files, scope = collect_diff(root, args.staged, args.git_range, compact_diff=args.compact_diff)
             mode = "diff"
         syntax_engine = attach_highlighting(root, files)
     except (RuntimeError, ValueError) as error:

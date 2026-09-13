@@ -41,8 +41,13 @@ cd /path/to/project
 python3 ~/.pi/agent/skills/code-review-ide/scripts/review.py
 python3 ~/.pi/agent/skills/code-review-ide/scripts/review.py --staged
 python3 ~/.pi/agent/skills/code-review-ide/scripts/review.py --range main...HEAD
+python3 ~/.pi/agent/skills/code-review-ide/scripts/review.py --compact-diff
 python3 ~/.pi/agent/skills/code-review-ide/scripts/review.py --files src/app.py analysis.ipynb
 ```
+
+Diff reviews show complete changed text files by default, including unchanged lines before, between, and after edits. This applies to working-tree, staged, and revision-range diffs. Unchanged files are not included. Full context uses Git's signed 32-bit maximum of 2,147,483,647 context lines.
+
+Use `--compact-diff` only when you want the previous three context lines around each change. It also works with `--staged` and `--range` and has no effect on `--files` or rendered notebooks.
 
 The command stays open until the browser review is submitted or cancelled, then prints one JSON result to standard output.
 
